@@ -162,7 +162,7 @@ func hookFn(nf *nfqueue.Nfqueue, a nfqueue.Attribute, fn pktProcessFn) int {
 
 //
 func runNft(config string) {
-	f, err := os.CreateTemp("", "goyyo-*.nft")
+	f, err := os.CreateTemp("", "ads-*.nft")
 	if err != nil {
 		log.Print("Error creating a temp file", err)
 		return
