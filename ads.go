@@ -66,8 +66,8 @@ table inet dns_drop {
 		meta l4proto udp udp sport 53 queue num %[1]d bypass
 	}
 }
-`,
-		DNS_QUEUE)
+`, DNS_QUEUE)
+
 	runNft(conf)
 }
 
@@ -182,7 +182,7 @@ func runNft(config string) {
 	if err != nil {
 		log.Print("Error running nft", config,
 			"\n---- ouput:", string(output),
-			"\n----error:", err)
+			"\n---- error:", err)
 		return
 	}
 }
@@ -281,7 +281,6 @@ func urlFromLine_StevenBlack(line string) (string, BlockConf, bool) {
 //
 //func urlFromLine_EasyList(line string) (string, BlockConf, bool) {
 func _(line string) (string, BlockConf, bool) {
-
 	line = strings.TrimSpace(line)
 	if strings.HasPrefix(line, "||") {
 		line = strings.TrimPrefix(line, "||")
