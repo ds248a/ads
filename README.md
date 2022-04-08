@@ -1,3 +1,3 @@
 # ads
 
-AdGuard DNS for Linux
+Ad Server for Linux
