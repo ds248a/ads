@@ -3,7 +3,6 @@ package ads
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -22,16 +21,17 @@ const (
 	QUEUE_SIZE = 50
 )
 
-type BlockConf struct{}
+type AdBlock struct{}
 
 type pktProcessFn func(gopacket.Packet) (int, bool)
 
 //
 func NewAds(ctx context.Context, adservers string) {
 	addDnsDropTable()
-	defer deleteDnsDroptable()
+	defer deleteDnsDropTable()
 
-	db := buildAdServerDb(adservers)
+	// upload block list
+	db := blockListUpdate(adservers)
 	if db == nil {
 		return
 	}
@@ -50,36 +50,10 @@ func NewAds(ctx context.Context, adservers string) {
 	defer nfq.Close()
 
 	<-ctx.Done()
-
-	log.Print("stop drop dns")
 }
 
 //
-func addDnsDropTable() {
-	conf := fmt.Sprintf(`
-table inet dns_drop {
-}
-delete table inet dns_drop
-table inet dns_drop {
-	chain c_pre {
-		type filter hook prerouting priority filter; policy accept;
-		meta l4proto udp udp sport 53 queue num %[1]d bypass
-	}
-}
-`, DNS_QUEUE)
-
-	runNft(conf)
-}
-
-//
-func deleteDnsDroptable() {
-	runNft(`
-delete table inet dns_drop
-`)
-}
-
-//
-func buildAdServerDb(adservers string) map[string]BlockConf {
+func blockListUpdate(adservers string) map[string]AdBlock {
 	resp, err := http.Get(adservers)
 	if err != nil {
 		log.Print("Unable to sent GET req to ", adservers, " err:", err)
@@ -90,7 +64,7 @@ func buildAdServerDb(adservers string) map[string]BlockConf {
 		return nil
 	}
 
-	db := make(map[string]BlockConf, 2000)
+	db := make(map[string]AdBlock, 2000)
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -102,89 +76,6 @@ func buildAdServerDb(adservers string) map[string]BlockConf {
 	log.Printf("Added %d urls", len(db))
 
 	return db
-}
-
-//
-func hookFn(nf *nfqueue.Nfqueue, a nfqueue.Attribute, fn pktProcessFn) int {
-	if a.PacketID == nil {
-		log.Print("Unable to deref Packet details")
-		return 0
-	}
-
-	id := *a.PacketID
-
-	if a.Payload == nil {
-		log.Print("Unable to deref Packet details")
-		err := nf.SetVerdict(id, nfqueue.NfAccept)
-		if err != nil {
-			log.Print("SetVerdict err", err)
-		}
-		return 0
-	}
-
-	payload := *a.Payload
-
-	var decoder gopacket.Decoder
-	if payload[0]&0xf0 == 0x40 {
-		decoder = layers.LayerTypeIPv4
-	} else {
-		decoder = layers.LayerTypeIPv6
-	}
-
-	pkt := gopacket.NewPacket(
-		payload,
-		decoder,
-		gopacket.DecodeOptions{
-			Lazy:   true,
-			NoCopy: true},
-	)
-
-	verdict, mod := fn(pkt)
-	if mod {
-		// dropsCounter.Inc()
-	}
-
-	if mod {
-		err := nf.SetVerdictModPacket(id, verdict, pkt.Data())
-		if err != nil {
-			log.Print("SetVerdictModPacket err", err)
-		}
-
-	} else {
-		err := nf.SetVerdict(id, verdict)
-		if err != nil {
-			log.Print("SetVerdict err", err)
-		}
-	}
-
-	return 0
-}
-
-//
-func runNft(config string) {
-	f, err := os.CreateTemp("", "ads-*.nft")
-	if err != nil {
-		log.Print("Error creating a temp file", err)
-		return
-	}
-	defer f.Close()
-
-	_, err = f.Write([]byte(config))
-	if err != nil {
-		log.Print("Error writing config", err)
-		return
-	}
-	f.Close()
-
-	cmd := exec.Command("nft", "-f", f.Name())
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Print("Error running nft", config,
-			"\n---- ouput:", string(output),
-			"\n---- error:", err)
-		return
-	}
 }
 
 //
@@ -205,14 +96,18 @@ func registerNFQ(ctx context.Context, fn pktProcessFn) *nfqueue.Nfqueue {
 	}
 
 	err = nf.RegisterWithErrorFunc(ctx,
+		// HookFunc
 		func(a nfqueue.Attribute) int {
 			return hookFn(nf, a, fn)
-		}, func(e error) int {
+		},
+		// ErrorFunc
+		func(e error) int {
 			if err != nil {
 				log.Print("ErrFN: ", err)
 			}
 			return 0
 		})
+
 	if err != nil {
 		log.Print("could not register fn", err)
 		return nil
@@ -221,10 +116,60 @@ func registerNFQ(ctx context.Context, fn pktProcessFn) *nfqueue.Nfqueue {
 	return nf
 }
 
+// Nfqueue HookFunc
+func hookFn(nf *nfqueue.Nfqueue, a nfqueue.Attribute, fn pktProcessFn) int {
+	if a.PacketID == nil {
+		log.Print("Unable to deref Packet details")
+		return 0
+	}
+
+	id := *a.PacketID
+
+	if a.Payload == nil {
+		log.Print("Unable to deref Packet details")
+		err := nf.SetVerdict(id, nfqueue.NfAccept)
+		if err != nil {
+			log.Print("SetVerdict err", err)
+		}
+		return 0
+	}
+
+	payload := *a.Payload
+	var decoder gopacket.Decoder
+
+	if payload[0]&0xf0 == 0x40 {
+		decoder = layers.LayerTypeIPv4
+	} else {
+		decoder = layers.LayerTypeIPv6
+	}
+
+	pkt := gopacket.NewPacket(payload, decoder, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
+
+	verdict, mod := fn(pkt)
+	if mod {
+		//
+	}
+
+	if mod {
+		err := nf.SetVerdictModPacket(id, verdict, pkt.Data())
+		if err != nil {
+			log.Print("SetVerdictModPacket err", err)
+		}
+	} else {
+		err := nf.SetVerdict(id, verdict)
+		if err != nil {
+			log.Print("SetVerdict err", err)
+		}
+	}
+
+	return 0
+}
+
 //
-func processDNSPacket(pkt gopacket.Packet, db map[string]BlockConf) (int, bool) {
+func processDNSPacket(pkt gopacket.Packet, db map[string]AdBlock) (int, bool) {
 	modified := false
 	log.Print("got a pkt")
+
 	switch proto := pkt.ApplicationLayer().(type) {
 	case *layers.DNS:
 		for i, ans := range proto.Answers {
@@ -261,38 +206,38 @@ func processDNSPacket(pkt gopacket.Packet, db map[string]BlockConf) (int, bool) 
 }
 
 //
-func isBlockedURL(url string, db map[string]BlockConf) bool {
+func isBlockedURL(url string, db map[string]AdBlock) bool {
 	_, ok := db[url]
 	return ok
 }
 
 //
-func urlFromLine_StevenBlack(line string) (string, BlockConf, bool) {
+func urlFromLine_StevenBlack(line string) (string, AdBlock, bool) {
 	line = strings.TrimSpace(line)
 
 	if strings.HasPrefix(line, "0.0.0.0 ") {
 		url := strings.TrimPrefix(line, "0.0.0.0 ")
-		return url, BlockConf{}, true
+		return url, AdBlock{}, true
 	}
 
-	return "", BlockConf{}, false
+	return "", AdBlock{}, false
 }
 
 //
-//func urlFromLine_EasyList(line string) (string, BlockConf, bool) {
-func _(line string) (string, BlockConf, bool) {
+//func urlFromLine_EasyList(line string) (string, AdBlock, bool) {
+func _(line string) (string, AdBlock, bool) {
 	line = strings.TrimSpace(line)
 	if strings.HasPrefix(line, "||") {
 		line = strings.TrimPrefix(line, "||")
 		if strings.HasSuffix(line, "^") {
 			url := strings.TrimSuffix(line, "^")
-			return url, BlockConf{}, true
+			return url, AdBlock{}, true
 		}
 		if strings.HasSuffix(line, "^$third-party") {
 			url := strings.TrimSuffix(line, "^$third-party")
-			return url, BlockConf{}, true
+			return url, AdBlock{}, true
 		}
 	}
 
-	return "", BlockConf{}, false
+	return "", AdBlock{}, false
 }
