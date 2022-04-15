@@ -1,3 +1,3 @@
 # ads
 
-Ad Server for Linux
+DNS block list for Nftables

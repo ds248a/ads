@@ -6,8 +6,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -26,12 +24,12 @@ type AdBlock struct{}
 type pktProcessFn func(gopacket.Packet) (int, bool)
 
 //
-func NewAds(ctx context.Context, adservers string) {
+func NewAds(ctx context.Context, adServer string) {
 	addDnsDropTable()
 	defer deleteDnsDropTable()
 
 	// upload block list
-	db := blockListUpdate(adservers)
+	db := blockListUpload(adServer)
 	if db == nil {
 		return
 	}
@@ -53,10 +51,10 @@ func NewAds(ctx context.Context, adservers string) {
 }
 
 //
-func blockListUpdate(adservers string) map[string]AdBlock {
-	resp, err := http.Get(adservers)
+func blockListUpload(adServer string) map[string]AdBlock {
+	resp, err := http.Get(adServer)
 	if err != nil {
-		log.Print("Unable to sent GET req to ", adservers, " err:", err)
+		log.Print("Unable to sent GET req to ", adServer, " err:", err)
 		return nil
 	}
 	if resp.StatusCode >= 300 {
